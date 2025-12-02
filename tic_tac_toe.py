@@ -69,24 +69,21 @@ def get_device_id():
     return st.session_state.device_id
 
 
-# ---------------------- 房间强制清理与校验 ----------------------
+# ---------------------- 房间清理与校验 ----------------------
 def force_clean_room(room_id):
-    """强制清理指定房间的所有记录（解决残留占用）"""
     try:
-        # 查找房间
         params = {"where": f'{{"room_id":"{room_id}"}}', "limit": 1}
         res = requests.get(BASE_API_URL, headers=HEADERS, params=params, timeout=10)
         res.raise_for_status()
         data = res.json()
         if data.get("results"):
-            # 存在则删除
             object_id = data["results"][0]["objectId"]
             requests.delete(f"{BASE_API_URL}/{object_id}", headers=HEADERS, timeout=10)
             st.success(f"房间 {room_id} 已强制清理！")
-            time.sleep(1)  # 等待删除生效
+            time.sleep(1)
             return True
         else:
-            st.info(f"房间 {room_id} 不存在，无需清理")
+            st.info(f"房间 {room_id} 不存在")
             return True
     except Exception as e:
         st.error(f"清理失败：{str(e)}")
@@ -94,37 +91,32 @@ def force_clean_room(room_id):
 
 
 def validate_room_state(room_data):
-    """校验房间状态是否有效（过滤无效占用）"""
     if not room_data:
         return None
-    # 校验玩家数量是否合理（0-2）
     player_count = room_data.get("player_count", 0)
     if player_count < 0 or player_count > 2:
-        return None  # 无效状态，视为房间不存在
-    # 校验玩家列表是否有效
+        return None
     players = room_data.get("players", {})
     if len(players) != player_count:
-        return None  # 玩家数量与列表不匹配，视为无效
+        return None
     return room_data
 
 
 # ---------------------- 房间操作 ----------------------
 def load_room(room_id):
-    """加载并校验房间状态"""
     try:
         params = {"where": f'{{"room_id":"{room_id}"}}', "limit": 1}
         res = requests.get(BASE_API_URL, headers=HEADERS, params=params, timeout=10)
         res.raise_for_status()
         data = res.json()
         room_data = data["results"][0] if data.get("results") else None
-        return validate_room_state(room_data)  # 仅返回有效状态
+        return validate_room_state(room_data)
     except Exception as e:
         st.error(f"加载房间失败：{str(e)}")
         return None
 
 
 def create_room(room_id):
-    """创建新房间"""
     device_id = get_device_id()
     new_room = {
         "room_id": room_id,
@@ -142,57 +134,37 @@ def create_room(room_id):
 
 
 def enter_room(room_id):
-    """进入房间：优先清理无效状态，再创建/加入"""
     device_id = get_device_id()
     room_data = load_room(room_id)
-
-    # 情况1：房间无效或不存在，直接创建新房间
     if not room_data:
         return create_room(room_id)
-
-    # 情况2：房间有效，检查是否可加入
     current_count = room_data["player_count"]
     current_players = room_data["players"]
-
-    # 已在房间中，直接返回
     if device_id in current_players:
         return room_data
-
-    # 未满2人，加入为O
     if current_count < 2:
         updated_players = current_players.copy()
         updated_players[device_id] = "O"
         updated_data = {**room_data, "player_count": current_count + 1, "players": updated_players}
         requests.put(f"{BASE_API_URL}/{room_data['objectId']}", headers=HEADERS, json=updated_data, timeout=10)
         return updated_data
-
-    # 房间已满
     return None
 
 
 def exit_room(room_id):
-    """退出房间：最后一人退出时强制删除"""
     device_id = get_device_id()
     room_data = load_room(room_id)
     if not room_data:
         return
-
     current_players = room_data["players"].copy()
     current_count = room_data["player_count"]
-
-    # 不在房间中，无需处理
     if device_id not in current_players:
         return
-
-    # 移除当前玩家
     del current_players[device_id]
     new_count = current_count - 1
-
-    # 最后一人退出：强制删除房间
     if new_count == 0:
         force_clean_room(room_id)
     else:
-        # 更新房间状态
         updated_data = {**room_data, "player_count": new_count, "players": current_players}
         requests.put(f"{BASE_API_URL}/{room_data['objectId']}", headers=HEADERS, json=updated_data, timeout=10)
 
@@ -208,14 +180,19 @@ room_id = st.selectbox(
     key="room_selector"
 )
 
-# 初始化会话状态
+# 初始化会话状态（修复核心：确保board是列表，避免None）
 for key in ["entered_room", "my_role", "object_id", "board", "current_player", "game_over", "winner", "player_count",
             "players"]:
     if key not in st.session_state:
-        st.session_state[key] = False if key == "entered_room" else None
+        if key == "entered_room":
+            st.session_state[key] = False
+        elif key == "board":
+            st.session_state[key] = ["", "", "", "", "", "", "", "", ""]  # 强制初始化为空列表
+        else:
+            st.session_state[key] = None
 
-# 紧急清理按钮（核心解决占用问题）
-if st.button("⚠️ 强制清理房间（解决占用）", use_container_width=True, type="secondary"):
+# 强制清理按钮
+if st.button("⚠️ 强制清理房间", use_container_width=True, type="secondary"):
     force_clean_room(room_id)
     st.rerun()
 
@@ -229,12 +206,12 @@ with col1:
                 st.session_state.entered_room = False
                 st.error("房间已解散，请重新进入")
             else:
-                st.session_state.board = room_data["board"]
-                st.session_state.current_player = room_data["current_player"]
-                st.session_state.game_over = room_data["game_over"]
-                st.session_state.winner = room_data["winner"]
-                st.session_state.player_count = room_data["player_count"]
-                st.session_state.players = room_data["players"]
+                st.session_state.board = room_data.get("board", ["", "", "", "", "", "", "", "", ""])
+                st.session_state.current_player = room_data.get("current_player", "X")
+                st.session_state.game_over = room_data.get("game_over", False)
+                st.session_state.winner = room_data.get("winner")
+                st.session_state.player_count = room_data.get("player_count", 0)
+                st.session_state.players = room_data.get("players", {})
                 st.session_state.my_role = room_data["players"].get(get_device_id())
                 st.success("状态已刷新")
         else:
@@ -255,19 +232,19 @@ if not st.session_state.entered_room:
         if room_data:
             st.session_state.entered_room = True
             st.session_state.object_id = room_data["objectId"]
-            st.session_state.board = room_data["board"]
-            st.session_state.current_player = room_data["current_player"]
-            st.session_state.game_over = room_data["game_over"]
-            st.session_state.winner = room_data["winner"]
-            st.session_state.player_count = room_data["player_count"]
-            st.session_state.players = room_data["players"]
+            st.session_state.board = room_data.get("board", ["", "", "", "", "", "", "", "", ""])
+            st.session_state.current_player = room_data.get("current_player", "X")
+            st.session_state.game_over = room_data.get("game_over", False)
+            st.session_state.winner = room_data.get("winner")
+            st.session_state.player_count = room_data.get("player_count", 0)
+            st.session_state.players = room_data.get("players", {})
             st.session_state.my_role = room_data["players"][get_device_id()]
             st.success(f"进入房间 {room_id}，角色：{st.session_state.my_role}")
             st.rerun()
         else:
-            st.error("房间已满！可尝试先点击「强制清理房间」")
+            st.error("房间已满！请先点击「强制清理房间」")
 
-# 游戏棋盘（已进入房间时）
+# 游戏棋盘（修复按钮参数类型）
 if st.session_state.entered_room and st.session_state.my_role:
     st.divider()
     st.info(
@@ -279,7 +256,7 @@ if st.session_state.entered_room and st.session_state.my_role:
         else:
             st.success(f"🏆 {st.session_state.winner} 获胜！")
 
-    # 棋盘
+    # 棋盘（确保按钮参数类型正确）
     st.subheader("游戏棋盘")
     with st.container():
         st.markdown('<div class="board-container">', unsafe_allow_html=True)
@@ -288,19 +265,26 @@ if st.session_state.entered_room and st.session_state.my_role:
 
         for i in range(9):
             with grid[i]:
-                text = st.session_state.board[i] if st.session_state.board[i] else " "
-                disabled = (
-                        st.session_state.game_over
-                        or st.session_state.board[i]
-                        or st.session_state.my_role != st.session_state.current_player
+                # 修复1：确保text是字符串（避免None）
+                cell_value = st.session_state.board[i]
+                text = cell_value if isinstance(cell_value, str) else " "
+
+                # 修复2：确保disabled是布尔值
+                is_disabled = bool(
+                    st.session_state.game_over
+                    or (text != " ")  # 已有棋子
+                    or (st.session_state.my_role != st.session_state.current_player)  # 不是自己回合
                 )
+
+                # 修复3：按钮参数类型严格匹配
                 if st.button(
-                        text,
+                        label=text,  # 显式指定label参数
                         key=f"cell_{i}",
-                        disabled=disabled,
+                        disabled=is_disabled,
                         use_container_width=True,
                         type="primary" if text == "X" else "secondary"
                 ):
+                    # 落子逻辑
                     st.session_state.board[i] = st.session_state.my_role
                     winner = check_winner(st.session_state.board)
                     if winner:
@@ -316,9 +300,7 @@ if st.session_state.entered_room and st.session_state.my_role:
                             "board": st.session_state.board,
                             "current_player": st.session_state.current_player,
                             "game_over": st.session_state.game_over,
-                            "winner": st.session_state.winner,
-                            "player_count": st.session_state.player_count,
-                            "players": st.session_state.players
+                            "winner": st.session_state.winner
                         }
                         requests.put(
                             f"{BASE_API_URL}/{st.session_state.object_id}",
@@ -356,9 +338,4 @@ if st.session_state.entered_room and st.session_state.my_role:
             st.warning(f"重置失败：{str(e)}")
         st.rerun()
 
-st.caption("""
-💡 解决房间占用：
-1. 若提示"房间已满"，先点击「强制清理房间」
-2. 清理后再点击「进入房间」即可创建新房间
-3. 退出时会自动删除房间记录，避免占用
-""")
+st.caption("💡 操作提示：进入房间后，在自己的回合点击空白格子即可落子")
