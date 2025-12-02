@@ -1,27 +1,35 @@
 import streamlit as st
 import requests
 import time
-from streamlit_extras.grid import grid  # 用于响应式网格布局
 
-# ---------------------- 页面样式优化（解决手机九宫格显示问题） ----------------------
+# ---------------------- 页面样式优化（纯原生组件，解决手机九宫格显示） ----------------------
 st.set_page_config(
     page_title="双人井字棋",
-    layout="centered",  # 居中布局，适配手机
-    initial_sidebar_state="collapsed"  # 隐藏侧边栏，节省空间
+    layout="centered",  # 居中布局适配手机
+    initial_sidebar_state="collapsed"
 )
 
-# 自定义CSS：强制按钮正方形显示，适配手机屏幕
+# 自定义CSS：强制按钮正方形显示，适配手机屏幕（纯原生实现）
 st.markdown("""
 <style>
+    /* 确保棋盘容器紧凑 */
+    .board-container {
+        width: 100%;
+        max-width: 300px;
+        margin: 0 auto;
+    }
+    /* 按钮样式：正方形、适配手机 */
     .stButton > button {
         width: 100% !important;
-        height: 80px !important;  # 固定高度，确保正方形
-        font-size: 2rem !important;  # 棋子大小适配手机
+        height: 90px !important;
+        font-size: 2rem !important;
         padding: 0 !important;
+        margin: 2px !important;  # 格子间微小间距
     }
-    @media (max-width: 600px) {  # 手机端额外调整
+    /* 手机端适配 */
+    @media (max-width: 400px) {
         .stButton > button {
-            height: 60px !important;
+            height: 80px !important;
             font-size: 1.5rem !important;
         }
     }
@@ -55,7 +63,7 @@ def check_winner(board):
     return None
 
 
-# ---------------------- 3. 读取房间状态（新增人数限制） ----------------------
+# ---------------------- 3. 读取房间状态（人数限制） ----------------------
 def load_game_state(room_id):
     try:
         params = {"where": f'{{"room_id":"{room_id}"}}', "limit": 1}
@@ -65,7 +73,6 @@ def load_game_state(room_id):
 
         if data.get("results"):
             game_data = data["results"][0]
-            # 确保返回玩家数量（兼容旧数据）
             player_count = game_data.get("player_count", 0)
             return {
                 "object_id": game_data["objectId"],
@@ -74,17 +81,16 @@ def load_game_state(room_id):
                 "game_over": game_data["game_over"],
                 "winner": game_data["winner"],
                 "room_id": room_id,
-                "player_count": player_count  # 新增：房间当前人数
+                "player_count": player_count
             }
         else:
-            # 新房间初始化（包含人数计数）
             init_game = {
                 "room_id": room_id,
                 "board": ["", "", "", "", "", "", "", "", ""],
                 "current_player": "X",
                 "game_over": False,
                 "winner": None,
-                "player_count": 0  # 初始人数为0
+                "player_count": 0
             }
             create_response = requests.post(BASE_API_URL, headers=HEADERS, json=init_game, timeout=10)
             create_response.raise_for_status()
@@ -111,7 +117,7 @@ def load_game_state(room_id):
         }
 
 
-# ---------------------- 4. 保存房间状态（同步人数和落子） ----------------------
+# ---------------------- 4. 保存房间状态 ----------------------
 def save_game_state(state):
     if state["object_id"] == "local":
         st.warning("本地模式：仅本机可见操作")
@@ -124,7 +130,7 @@ def save_game_state(state):
             "current_player": state["current_player"],
             "game_over": state["game_over"],
             "winner": state["winner"],
-            "player_count": state["player_count"]  # 保存人数
+            "player_count": state["player_count"]
         }
         response = requests.put(update_url, headers=HEADERS, json=update_data, timeout=10)
         response.raise_for_status()
@@ -132,15 +138,12 @@ def save_game_state(state):
         st.warning(f"同步失败：{str(e)}")
 
 
-# ---------------------- 5. 房间人数管理（限制2人进入） ----------------------
+# ---------------------- 5. 房间人数管理 ----------------------
 def enter_room(room_id, current_state):
-    """处理玩家进入房间，限制最多2人"""
     if current_state["player_count"] < 2:
-        # 人数未满，允许进入并增加计数
         new_count = current_state["player_count"] + 1
         return {**current_state, "player_count": new_count}
     else:
-        # 人数已满，返回原状态
         return current_state
 
 
@@ -157,11 +160,10 @@ room_id = st.selectbox(
 
 # 拉取房间状态并处理玩家进入
 game_state = load_game_state(room_id)
-# 玩家进入房间（首次进入时人数+1，重复进入不计数）
 if "entered_room" not in st.session_state:
     game_state = enter_room(room_id, game_state)
     save_game_state(game_state)
-    st.session_state.entered_room = True  # 标记为已进入
+    st.session_state.entered_room = True
 
 # 更新本地状态
 st.session_state.object_id = game_state["object_id"]
@@ -172,68 +174,71 @@ st.session_state.winner = game_state["winner"]
 st.session_state.room_id = room_id
 st.session_state.player_count = game_state["player_count"]
 
-# ---------------------- 7. 房间状态提示（显示人数和回合） ----------------------
+# ---------------------- 7. 房间状态提示 ----------------------
 st.divider()
-# 显示房间人数状态
 if st.session_state.player_count < 2:
     st.info(f"📌 房间 {room_id} - 等待玩家加入（当前{st.session_state.player_count}/2人）")
 else:
     st.info(f"📌 房间 {room_id} - 已满（2/2人）| 当前回合：玩家 {st.session_state.current_player}")
 
-# 游戏结束提示
 if st.session_state.game_over:
     if st.session_state.winner == "平局":
         st.success(f"🟰 游戏结束：平局！")
     else:
         st.success(f"🏆 游戏结束：玩家 {st.session_state.winner} 获胜！")
 
-# ---------------------- 8. 响应式九宫格棋盘（核心修复手机显示） ----------------------
+# ---------------------- 8. 原生九宫格棋盘（核心修复，无外部依赖） ----------------------
 st.subheader("游戏棋盘")
-# 使用streamlit-extras的grid组件，强制3x3网格（适配手机）
-board_grid = grid(3, 3, vertical_align="center")  # 3列3行，垂直居中
+# 用原生columns创建3x3网格（适配手机）
+with st.container():  # 容器确保棋盘紧凑
+    st.markdown('<div class="board-container">', unsafe_allow_html=True)
 
-# 遍历格子生成按钮
-for grid_idx in range(9):
-    # 按钮文本：X/O或空白（手机端清晰显示）
-    btn_text = st.session_state.board[grid_idx] if st.session_state.board[grid_idx] != "" else " "
-    # 禁用条件：已落子/游戏结束/房间未满（确保两人才能开始）
-    is_disabled = (
-            st.session_state.game_over
-            or st.session_state.board[grid_idx] != ""
-            or st.session_state.player_count < 2  # 人数不足2人时禁止落子
-    )
+    # 第一行
+    col1, col2, col3 = st.columns(3, gap="small")
+    # 第二行
+    col4, col5, col6 = st.columns(3, gap="small")
+    # 第三行
+    col7, col8, col9 = st.columns(3, gap="small")
 
-    # 在网格中放置按钮
-    if board_grid.button(
-            btn_text,
-            key=f"btn_{room_id}_{grid_idx}",
-            disabled=is_disabled,
-            use_container_width=True,
-            type="primary" if st.session_state.board[grid_idx] == "X" else "secondary"
-    ):
-        # 落子逻辑
-        st.session_state.board[grid_idx] = st.session_state.current_player
-        # 判断胜负
-        st.session_state.winner = check_winner(st.session_state.board)
-        if st.session_state.winner is not None:
-            st.session_state.game_over = True
-        else:
-            # 切换玩家
-            st.session_state.current_player = "O" if st.session_state.current_player == "X" else "X"
+    # 格子索引与列对应关系
+    grid_cols = [col1, col2, col3, col4, col5, col6, col7, col8, col9]
 
-        # 保存状态（包含当前人数）
-        save_game_state({
-            "object_id": st.session_state.object_id,
-            "room_id": room_id,
-            "board": st.session_state.board,
-            "current_player": st.session_state.current_player,
-            "game_over": st.session_state.game_over,
-            "winner": st.session_state.winner,
-            "player_count": st.session_state.player_count
-        })
+    # 生成九宫格按钮
+    for grid_idx in range(9):
+        with grid_cols[grid_idx]:
+            btn_text = st.session_state.board[grid_idx] if st.session_state.board[grid_idx] != "" else " "
+            is_disabled = (
+                    st.session_state.game_over
+                    or st.session_state.board[grid_idx] != ""
+                    or st.session_state.player_count < 2
+            )
 
-        # 立即刷新
-        st.rerun()
+            if st.button(
+                    btn_text,
+                    key=f"btn_{room_id}_{grid_idx}",
+                    disabled=is_disabled,
+                    use_container_width=True,
+                    type="primary" if st.session_state.board[grid_idx] == "X" else "secondary"
+            ):
+                st.session_state.board[grid_idx] = st.session_state.current_player
+                st.session_state.winner = check_winner(st.session_state.board)
+                if st.session_state.winner is not None:
+                    st.session_state.game_over = True
+                else:
+                    st.session_state.current_player = "O" if st.session_state.current_player == "X" else "X"
+
+                save_game_state({
+                    "object_id": st.session_state.object_id,
+                    "room_id": room_id,
+                    "board": st.session_state.board,
+                    "current_player": st.session_state.current_player,
+                    "game_over": st.session_state.game_over,
+                    "winner": st.session_state.winner,
+                    "player_count": st.session_state.player_count
+                })
+                st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ---------------------- 9. 重置游戏 ----------------------
@@ -244,7 +249,6 @@ def reset_game():
     st.session_state.game_over = False
     st.session_state.winner = None
 
-    # 重置时保留人数（不踢人）
     save_game_state({
         "object_id": st.session_state.object_id,
         "room_id": room_id,
@@ -252,17 +256,15 @@ def reset_game():
         "current_player": "X",
         "game_over": False,
         "winner": None,
-        "player_count": st.session_state.player_count  # 保留当前人数
+        "player_count": st.session_state.player_count
     })
     st.rerun()
 
 
-# 只有房间满人时才显示重置按钮
 if st.session_state.player_count >= 2:
     st.divider()
     st.button("🔄 重新开始本局", on_click=reset_game, use_container_width=True)
 
-# 联机说明
 st.caption(f"""
 💡 规则：
 1. 每个房间最多2人，满人后无法加入
