@@ -22,7 +22,6 @@ st.markdown("""
         font-size: 1.5rem !important;
         padding: 0 !important;
         margin: 1px !important;
-        white-space: nowrap !important;
     }
     @media (max-width: 400px) {
         .board-container {
@@ -66,143 +65,112 @@ def check_winner(board):
     return None
 
 
-# ---------------------- 读取房间状态 ----------------------
+# ---------------------- 读取/删除房间状态 ----------------------
 def load_game_state(room_id):
     try:
         params = {"where": f'{{"room_id":"{room_id}"}}', "limit": 1}
         response = requests.get(BASE_API_URL, headers=HEADERS, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
-
-        if data.get("results"):
-            game_data = data["results"][0]
-            return {
-                "object_id": game_data["objectId"],
-                "board": game_data.get("board", ["", "", "", "", "", "", "", "", ""]),
-                "current_player": game_data.get("current_player", "X"),
-                "game_over": game_data.get("game_over", False),
-                "winner": game_data.get("winner"),
-                "room_id": room_id,
-                "player_count": game_data.get("player_count", 0),
-                "players": game_data.get("players", {})
-            }
-        else:
-            return None  # 房间不存在时返回None（区别于初始化）
-    except requests.exceptions.RequestException as e:
-        st.error(f"服务器连接失败：{str(e)}")
+        return data["results"][0] if data.get("results") else None
+    except Exception as e:
+        st.error(f"加载房间失败：{str(e)}")
         return None
 
 
-# ---------------------- 保存/删除房间状态 ----------------------
-def save_game_state(state):
-    if state["object_id"] == "local":
-        st.warning("本地模式：仅本机可见操作")
-        return
-    try:
-        valid_fields = {
-            "room_id": str(state.get("room_id", "")),
-            "board": state.get("board", ["", "", "", "", "", "", "", "", ""]) if isinstance(state.get("board"),
-                                                                                            list) else ["", "", "", "",
-                                                                                                        "", "", "", "",
-                                                                                                        ""],
-            "current_player": str(state.get("current_player", "X")),
-            "game_over": bool(state.get("game_over", False)),
-            "winner": state.get("winner") if state.get("winner") in ("X", "O", "平局", None) else None,
-            "player_count": max(0, min(2, int(state.get("player_count", 0)))),
-            "players": state.get("players", {})
-        }
-        update_url = f"{BASE_API_URL}/{state['object_id']}"
-        response = requests.put(update_url, headers=HEADERS, json=valid_fields, timeout=10)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        st.warning(f"同步失败：{str(e)}")
-
-
 def delete_room_state(object_id):
-    """删除房间数据（当最后一个玩家退出时）"""
+    """强制删除房间记录"""
     try:
-        delete_url = f"{BASE_API_URL}/{object_id}"
-        response = requests.delete(delete_url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        st.success("房间已清空，可重新进入")
-    except requests.exceptions.RequestException as e:
-        st.warning(f"清除房间记录失败：{str(e)}")
+        requests.delete(f"{BASE_API_URL}/{object_id}", headers=HEADERS, timeout=10)
+    except Exception as e:
+        st.warning(f"清除房间失败：{str(e)}")
 
 
-# ---------------------- 房间管理（核心：退出时清除记录） ----------------------
+# ---------------------- 房间管理（修复核心问题） ----------------------
 def get_device_id():
+    """确保设备ID唯一且存在"""
     if "device_id" not in st.session_state:
         st.session_state.device_id = str(uuid.uuid4())
     return st.session_state.device_id
 
 
 def enter_room(room_id):
-    """进入房间：不存在则创建，存在则加入"""
+    """进入房间：确保新设备正确添加到玩家列表"""
     device_id = get_device_id()
-    game_state = load_game_state(room_id)
+    game_data = load_game_state(room_id)
 
-    # 房间不存在，创建新房间
-    if not game_state:
-        init_game = {
+    # 情况1：房间不存在，创建新房间（第一个玩家为X）
+    if not game_data:
+        new_room = {
             "room_id": room_id,
             "board": ["", "", "", "", "", "", "", "", ""],
             "current_player": "X",
             "game_over": False,
             "winner": None,
             "player_count": 1,
-            "players": {device_id: "X"}  # 第一个玩家为X
+            "players": {device_id: "X"}  # 强制添加当前设备
         }
-        create_response = requests.post(BASE_API_URL, headers=HEADERS, json=init_game, timeout=10)
-        create_response.raise_for_status()
-        new_game = create_response.json()
-        return {
-            **init_game,
-            "object_id": new_game["objectId"]
-        }
+        res = requests.post(BASE_API_URL, headers=HEADERS, json=new_room, timeout=10)
+        res.raise_for_status()
+        new_data = res.json()
+        return {**new_room, "objectId": new_data["objectId"]}
 
-    # 房间存在，加入（最多2人）
-    if game_state["player_count"] < 2 and device_id not in game_state["players"]:
-        players = game_state["players"].copy()
-        players[device_id] = "O"  # 第二个玩家为O
-        return {
-            **game_state,
-            "player_count": game_state["player_count"] + 1,
-            "players": players
+    # 情况2：房间存在，检查是否可加入
+    current_players = game_data.get("players", {})
+    current_count = game_data.get("player_count", 0)
+
+    # 若当前设备已在房间中，直接返回
+    if device_id in current_players:
+        return game_data
+
+    # 若房间未满（<2人），添加为第二个玩家（O）
+    if current_count < 2:
+        updated_players = current_players.copy()
+        updated_players[device_id] = "O"  # 强制添加当前设备为O
+        updated_data = {
+            **game_data,
+            "player_count": current_count + 1,
+            "players": updated_players
         }
-    return game_state  # 房间已满或已在房间中
+        requests.put(f"{BASE_API_URL}/{game_data['objectId']}", headers=HEADERS, json=updated_data, timeout=10)
+        return updated_data
+
+    # 房间已满
+    return None
 
 
 def exit_room(room_id):
-    """退出房间：最后一人退出时删除房间记录"""
+    """退出房间：最后一人退出时强制删除房间"""
     device_id = get_device_id()
-    game_state = load_game_state(room_id)
-    if not game_state:
-        return None  # 房间不存在
+    game_data = load_game_state(room_id)
+    if not game_data:
+        return
 
-    # 移除当前玩家
-    players = game_state["players"].copy()
-    if device_id in players:
-        del players[device_id]
-        new_count = max(0, game_state["player_count"] - 1)
-    else:
-        new_count = game_state["player_count"]
+    current_players = game_data.get("players", {})
+    current_count = game_data.get("player_count", 0)
 
-    # 最后一个玩家退出：删除房间记录
+    # 若当前设备不在房间中，无需处理
+    if device_id not in current_players:
+        return
+
+    # 移除当前设备
+    updated_players = current_players.copy()
+    del updated_players[device_id]
+    new_count = current_count - 1
+
+    # 最后一人退出：强制删除房间
     if new_count == 0:
-        delete_room_state(game_state["object_id"])
-        return None  # 房间已删除
-
-    # 还有玩家：更新状态（保留棋盘）
-    return {
-        **game_state,
-        "player_count": new_count,
-        "players": players
-    }
+        delete_room_state(game_data["objectId"])
+    else:
+        # 还有玩家：更新状态
+        updated_data = {**game_data, "player_count": new_count, "players": updated_players}
+        requests.put(f"{BASE_API_URL}/{game_data['objectId']}", headers=HEADERS, json=updated_data, timeout=10)
 
 
-# ---------------------- 页面初始化 ----------------------
+# ---------------------- 页面逻辑 ----------------------
 st.title("🎮 双人井字棋（联机版）")
 
+# 房间选择
 room_id = st.selectbox(
     "🔑 选择游戏房间",
     options=["8888", "6666"],
@@ -211,72 +179,66 @@ room_id = st.selectbox(
 )
 
 # 初始化会话状态
-if "entered_room" not in st.session_state:
-    st.session_state.entered_room = False
-if "device_id" not in st.session_state:
-    st.session_state.device_id = str(uuid.uuid4())
-if "my_role" not in st.session_state:
-    st.session_state.my_role = None
-if "object_id" not in st.session_state:
-    st.session_state.object_id = ""
+for key in ["entered_room", "my_role", "object_id", "board", "current_player", "game_over", "winner", "player_count",
+            "players"]:
+    if key not in st.session_state:
+        st.session_state[key] = False if key == "entered_room" else None
 
 # 操作按钮
 col_refresh, col_exit = st.columns(2)
 with col_refresh:
-    refresh_clicked = st.button("🔄 刷新状态", use_container_width=True)
-with col_exit:
-    exit_clicked = st.button("🚪 退出房间", use_container_width=True)
+    if st.button("🔄 刷新状态", use_container_width=True):
+        if st.session_state.entered_room:
+            game_data = load_game_state(room_id)
+            if not game_data:  # 房间已被删除
+                st.session_state.entered_room = False
+                st.error("房间已解散，请重新进入")
+            else:
+                # 安全更新状态
+                st.session_state.board = game_data.get("board", ["", "", "", "", "", "", "", "", ""])
+                st.session_state.current_player = game_data.get("current_player", "X")
+                st.session_state.game_over = game_data.get("game_over", False)
+                st.session_state.winner = game_data.get("winner")
+                st.session_state.player_count = game_data.get("player_count", 0)
+                st.session_state.players = game_data.get("players", {})
+                st.session_state.my_role = st.session_state.players.get(get_device_id())
+                st.success("状态已刷新")
+        else:
+            st.info("请先进入房间")
 
-# 处理退出房间（核心：清除记录）
-if exit_clicked and st.session_state.entered_room:
-    exit_result = exit_room(room_id)
-    # 重置本地状态
-    st.session_state.entered_room = False
-    st.session_state.my_role = None
-    st.session_state.object_id = ""
-    st.session_state.board = []
-    st.success("已退出房间，房间记录已清除")
-    st.rerun()
+with col_exit:
+    if st.button("🚪 退出房间", use_container_width=True) and st.session_state.entered_room:
+        exit_room(room_id)
+        # 重置所有状态
+        st.session_state.entered_room = False
+        st.session_state.my_role = None
+        st.session_state.object_id = None
+        st.session_state.board = []
+        st.success("已退出房间，记录已清除")
+        st.rerun()
 
 # 进入房间按钮
 if not st.session_state.entered_room:
     if st.button("📥 进入房间", use_container_width=True):
-        entered_state = enter_room(room_id)
-        if entered_state:
-            save_game_state(entered_state)
+        room_data = enter_room(room_id)
+        if room_data:
             st.session_state.entered_room = True
-            st.session_state.object_id = entered_state["object_id"]
-            st.session_state.board = entered_state["board"]
-            st.session_state.current_player = entered_state["current_player"]
-            st.session_state.game_over = entered_state["game_over"]
-            st.session_state.winner = entered_state["winner"]
-            st.session_state.player_count = entered_state["player_count"]
-            st.session_state.players = entered_state["players"]
-            st.session_state.my_role = entered_state["players"][st.session_state.device_id]
+            st.session_state.object_id = room_data["objectId"]
+            st.session_state.board = room_data.get("board", ["", "", "", "", "", "", "", "", ""])
+            st.session_state.current_player = room_data.get("current_player", "X")
+            st.session_state.game_over = room_data.get("game_over", False)
+            st.session_state.winner = room_data.get("winner")
+            st.session_state.player_count = room_data.get("player_count", 0)
+            st.session_state.players = room_data.get("players", {})
+            # 安全获取角色（修复KeyError核心）
+            st.session_state.my_role = st.session_state.players.get(get_device_id(), "未知")
             st.success(f"已进入房间 {room_id}，您的角色：{st.session_state.my_role}")
             st.rerun()
         else:
-            st.error("房间已满或创建失败")
+            st.error("房间已满或创建失败，请稍后再试")
 
-# 已进入房间逻辑
-if st.session_state.entered_room:
-    if refresh_clicked:
-        game_state = load_game_state(room_id)
-        if not game_state:  # 房间已被删除（对方已退出）
-            st.session_state.entered_room = False
-            st.session_state.my_role = None
-            st.error("房间已解散，请重新进入")
-            st.rerun()
-        st.session_state.board = game_state["board"]
-        st.session_state.current_player = game_state["current_player"]
-        st.session_state.game_over = game_state["game_over"]
-        st.session_state.winner = game_state["winner"]
-        st.session_state.player_count = game_state["player_count"]
-        st.session_state.players = game_state["players"]
-        st.session_state.my_role = game_state["players"].get(st.session_state.device_id)
-        st.success("状态已刷新")
-
-    # 显示状态
+# 已进入房间：显示棋盘
+if st.session_state.entered_room and st.session_state.my_role != "未知":
     st.divider()
     st.info(f"""
     📌 房间 {room_id}（{st.session_state.player_count}/2人）
@@ -315,25 +277,34 @@ if st.session_state.entered_room:
                         use_container_width=True,
                         type="primary" if st.session_state.board[grid_idx] == "X" else "secondary"
                 ):
+                    # 落子逻辑
                     st.session_state.board[grid_idx] = st.session_state.my_role
                     st.session_state.winner = check_winner(st.session_state.board)
-                    if st.session_state.winner is not None:
+                    if st.session_state.winner:
                         st.session_state.game_over = True
                         st.session_state.current_player = None
                     else:
                         st.session_state.current_player = "O" if st.session_state.current_player == "X" else "X"
 
-                    save_game_state({
-                        "object_id": st.session_state.object_id,
-                        "room_id": room_id,
-                        "board": st.session_state.board,
-                        "current_player": st.session_state.current_player,
-                        "game_over": st.session_state.game_over,
-                        "winner": st.session_state.winner,
-                        "player_count": st.session_state.player_count,
-                        "players": st.session_state.players
-                    })
-                    st.success("落子成功！请对方刷新状态")
+                    # 保存状态
+                    try:
+                        update_data = {
+                            "board": st.session_state.board,
+                            "current_player": st.session_state.current_player,
+                            "game_over": st.session_state.game_over,
+                            "winner": st.session_state.winner,
+                            "player_count": st.session_state.player_count,
+                            "players": st.session_state.players
+                        }
+                        requests.put(
+                            f"{BASE_API_URL}/{st.session_state.object_id}",
+                            headers=HEADERS,
+                            json=update_data,
+                            timeout=10
+                        )
+                        st.success("落子成功！请对方刷新")
+                    except Exception as e:
+                        st.warning(f"落子同步失败：{str(e)}")
                     st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
@@ -345,21 +316,30 @@ if st.session_state.entered_room:
         st.session_state.current_player = "X"
         st.session_state.game_over = False
         st.session_state.winner = None
-        save_game_state({
-            "object_id": st.session_state.object_id,
-            "room_id": room_id,
-            "board": reset_board,
-            "current_player": "X",
-            "game_over": False,
-            "winner": None,
-            "player_count": st.session_state.player_count,
-            "players": st.session_state.players
-        })
+        try:
+            update_data = {
+                "board": reset_board,
+                "current_player": "X",
+                "game_over": False,
+                "winner": None,
+                "player_count": st.session_state.player_count,
+                "players": st.session_state.players
+            }
+            requests.put(
+                f"{BASE_API_URL}/{st.session_state.object_id}",
+                headers=HEADERS,
+                json=update_data,
+                timeout=10
+            )
+            st.success("游戏已重置")
+        except Exception as e:
+            st.warning(f"重置失败：{str(e)}")
         st.rerun()
 
+# 操作说明
 st.caption("""
-💡 操作指南：
-1. 选择房间→点击「进入房间」（自动分配X/O角色）
-2. 只能在自己的回合落子，已落子格子不可修改
-3. 最后一人退出房间时，自动清除房间记录，避免占用
+💡 注意：
+1. 退出房间后，若无人剩余，房间记录会自动清除
+2. 若提示"房间已解散"，请重新进入即可创建新房间
+3. 角色固定为X（先进入）和O（后进入），不可更改
 """)
