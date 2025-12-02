@@ -1,2 +1,2 @@
-streamlit
+streamlit>=1.51.0  # 强制Cloud端安装≥1.51.0的版本
 requests
