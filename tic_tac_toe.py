@@ -201,7 +201,7 @@ def auto_restore_state(room_id):
 
 
 # ---------------------- 主页面逻辑 ----------------------
-st.title("🎮 Two-Player Tic-Tac-Toe")
+st.title("🎮 呆瓜宝小游戏 Tic-Tac-Toe")
 
 room_id = st.selectbox(
     "🔑 Select Room",
