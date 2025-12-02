@@ -3,7 +3,7 @@ import requests
 import uuid
 import time
 
-# ---------------------- Page Configuration & Styles ----------------------
+# ---------------------- 页面配置与样式 ----------------------
 st.set_page_config(
     page_title="Two-Player Tic-Tac-Toe",
     layout="centered",
@@ -24,15 +24,21 @@ st.markdown("""
         padding: 0 !important;
         margin: 1px !important;
     }
-    .debug-info {
+    .debug-box {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
         font-size: 0.8rem;
-        color: #666;
-        margin-top: 10px;
+        margin: 10px 0;
+    }
+    .room-id-box {
+        color: #2196F3;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------- Cloud Storage Configuration ----------------------
+# ---------------------- 云存储配置 ----------------------
 APP_ID = "hiwS1jgaGdLqJhk2UtEwHGdK-gzGzoHsz"
 APP_KEY = "bENg8Yr0UlGdt7NJB70i2VOW"
 BASE_API_URL = "https://api.leancloud.cn/1.1/classes/GameState"
@@ -43,7 +49,7 @@ HEADERS = {
 }
 
 
-# ---------------------- Core Utility Functions ----------------------
+# ---------------------- 核心工具函数 ----------------------
 def check_winner(board):
     win_combinations = [
         [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -65,40 +71,63 @@ def get_device_id():
     return st.session_state.device_id
 
 
-# ---------------------- Room Management ----------------------
+# ---------------------- 房间管理（核心优化：强制房间号唯一） ----------------------
 def force_clean_room(room_id):
+    """清理指定房间号的所有记录（确保唯一）"""
     try:
-        params = {"where": f'{{"room_id":"{room_id}"}}', "limit": 1}
+        # 查询该房间号的所有记录
+        params = {"where": f'{{"room_id":"{room_id}"}}'}
         res = requests.get(BASE_API_URL, headers=HEADERS, params=params, timeout=10)
         if res.status_code == 200 and res.json().get("results"):
-            object_id = res.json()["results"][0]["objectId"]
-            requests.delete(f"{BASE_API_URL}/{object_id}", headers=HEADERS, timeout=10)
-            st.success(f"Room {room_id} cleaned successfully!")
+            # 逐个删除所有记录（防止重复）
+            for record in res.json()["results"]:
+                object_id = record["objectId"]
+                requests.delete(f"{BASE_API_URL}/{object_id}", headers=HEADERS, timeout=10)
+            st.success(f"All records for room {room_id} cleaned!")
             time.sleep(1)
+            return True
         else:
-            st.info(f"No residual records in room {room_id}")
+            st.info(f"No records for room {room_id}")
     except Exception as e:
-        st.error(f"Clean failed: {str(e)}")
+        st.error(f"Clean error: {str(e)}")
+    return False
 
 
-def load_room(room_id):
+def load_room(room_id, debug=False):
+    """加载房间号对应的唯一房间（只取最新的有效记录）"""
     try:
-        params = {"where": f'{{"room_id":"{room_id}"}}', "limit": 1}
+        # 严格查询指定房间号的记录，按创建时间倒序（确保取最新的）
+        params = {
+            "where": f'{{"room_id":"{room_id}"}}',
+            "limit": 1,
+            "order": "-createdAt"  # 最新创建的优先
+        }
         res = requests.get(BASE_API_URL, headers=HEADERS, params=params, timeout=10)
         res.raise_for_status()
         data = res.json()
         if data.get("results"):
             room_data = data["results"][0]
             room_data["players"] = room_data.get("players", {})
-            room_data["player_count"] = len(room_data["players"])
+            if debug:
+                st.write(f"Loaded room (ID: {room_data['objectId']}): {room_data}")
             return room_data
+        if debug:
+            st.write(f"No room found for {room_id}")
         return None
     except Exception as e:
-        st.error(f"Failed to load room: {str(e)}")
+        st.error(f"Load room error: {str(e)}")
         return None
 
 
 def create_room(room_id):
+    """创建房间前先检查是否已存在，确保唯一"""
+    # 先检查是否已有该房间号的记录（防止重复创建）
+    existing_room = load_room(room_id)
+    if existing_room:
+        st.warning(f"Room {room_id} already exists! Joining existing room...")
+        return existing_room
+
+    # 确认不存在后再创建
     device_id = get_device_id()
     init_data = {
         "room_id": room_id,
@@ -108,49 +137,79 @@ def create_room(room_id):
         "winner": None,
         "players": {device_id: "X"}
     }
-    init_data["player_count"] = len(init_data["players"])
-    res = requests.post(BASE_API_URL, headers=HEADERS, json=init_data, timeout=10)
-    res.raise_for_status()
-    init_data["objectId"] = res.json()["objectId"]
-    return init_data
+    try:
+        res = requests.post(BASE_API_URL, headers=HEADERS, json=init_data, timeout=10)
+        res.raise_for_status()
+        new_data = res.json()
+        init_data["objectId"] = new_data["objectId"]
+        st.success(f"Room {room_id} created (Unique ID: {new_data['objectId'][:8]})")
+        return init_data
+    except Exception as e:
+        st.error(f"Create room failed: {str(e)}")
+        return None
 
 
 def enter_room(room_id):
+    """进入房间时强制绑定到同一房间号的唯一记录"""
     device_id = get_device_id()
     room_data = load_room(room_id)
 
+    # 情况1：房间不存在，创建新房间（已确保唯一）
     if not room_data:
         return create_room(room_id)
 
+    # 情况2：已在房间中，直接返回
     if device_id in room_data["players"]:
+        st.info(f"Already in room {room_id} (role: {room_data['players'][device_id]})")
         return room_data
 
+    # 情况3：房间未满，加入（强制同步并验证）
     if len(room_data["players"]) < 2:
         updated_players = room_data["players"].copy()
         updated_players[device_id] = "O"
-        updated_data = {
-            **room_data,
-            "players": updated_players,
-            "player_count": len(updated_players)
-        }
-        requests.put(
-            f"{BASE_API_URL}/{room_data['objectId']}",
-            headers=HEADERS,
-            json=updated_data,
-            timeout=10
-        )
-        return updated_data
+        updated_data = {**room_data, "players": updated_players}
 
+        try:
+            # 同步到云端
+            put_res = requests.put(
+                f"{BASE_API_URL}/{room_data['objectId']}",
+                headers=HEADERS,
+                json=updated_data,
+                timeout=10
+            )
+            put_res.raise_for_status()
+
+            # 强制等待并验证是否加入成功
+            time.sleep(1.5)  # 给云端足够同步时间
+            verified_room = load_room(room_id)
+            if verified_room and device_id in verified_room["players"]:
+                st.success(f"Joined room {room_id} as O (Unique ID: {verified_room['objectId'][:8]})")
+                return verified_room
+            else:
+                st.error("Failed to join: Server did not save your info")
+                return None
+
+        except Exception as e:
+            st.error(f"Join error: {str(e)}")
+            return None
+
+    # 情况4：房间已满
+    st.error(f"Room {room_id} is full (2 players). Clean room first.")
     return None
 
 
-# ---------------------- State Restoration ----------------------
+# ---------------------- 状态恢复 ----------------------
 def auto_restore_state(room_id):
     if st.session_state.entered_room:
         room_data = load_room(room_id)
-        if room_data:
+        if not room_data:
+            st.warning(f"Room {room_id} not found. Please re-enter.")
+            st.session_state.entered_room = False
+            return False
+        else:
             device_id = get_device_id()
             if device_id in room_data["players"]:
+                # 恢复状态时绑定到同一房间唯一ID
                 st.session_state.object_id = room_data["objectId"]
                 st.session_state.board = room_data.get("board", ["", "", "", "", "", "", "", "", ""])
                 st.session_state.current_player = room_data.get("current_player", "X")
@@ -161,27 +220,22 @@ def auto_restore_state(room_id):
                 return True
             else:
                 st.session_state.entered_room = False
-                st.session_state.my_role = None
-                st.warning("You have left the room. Please re-enter.")
-        else:
-            st.session_state.entered_room = False
-            st.session_state.my_role = None
-            st.warning("Room has been disbanded. Please re-enter.")
+                st.warning(f"You are not in room {room_id}. Please re-enter.")
     return False
 
 
-# ---------------------- Main Page Logic ----------------------
+# ---------------------- 主页面逻辑 ----------------------
 st.title("🎮 Two-Player Tic-Tac-Toe (Online)")
 
-# Room selection
+# 房间选择（强调唯一房间号）
 room_id = st.selectbox(
-    "🔑 Select Game Room",
+    "🔑 Select Game Room (Unique)",
     options=["8888", "6666"],
     index=0,
     key="room_selector"
 )
 
-# Initialize session state
+# 初始化会话状态
 required_states = {
     "entered_room": False,
     "my_role": None,
@@ -196,15 +250,25 @@ for key, default in required_states.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Auto-restore state on page load
+# 显示关键调试信息（用于确认是否同房间）
+device_id = get_device_id()
+st.markdown(f"""
+<div class="debug-box">
+- Your device ID: <strong>{device_id[:8]}...</strong><br>
+- Room number: <strong>{room_id}</strong><br>
+{'- Room unique ID: <span class="room-id-box">{st.session_state.object_id[:8]}...</span>' if st.session_state.object_id else ''}
+</div>
+""", unsafe_allow_html=True)
+
+# 自动恢复状态
 auto_restore_state(room_id)
 
-# Force clean room button
+# 强制清理按钮（确保清理该房间号的所有记录）
 if st.button("⚠️ Force Clean Room", use_container_width=True, type="secondary"):
-    force_clean_room(room_id)
-    st.rerun()
+    if force_clean_room(room_id):
+        st.rerun()
 
-# Action buttons: Refresh/Exit
+# 操作按钮：刷新/退出
 col_refresh, col_exit = st.columns(2)
 with col_refresh:
     if st.button("🔄 Manual Refresh", use_container_width=True):
@@ -219,60 +283,61 @@ with col_exit:
             players = room_data["players"].copy()
             if device_id in players:
                 del players[device_id]
-                updated_data = {
-                    **room_data,
-                    "players": players,
-                    "player_count": len(players)
-                }
-                requests.put(
-                    f"{BASE_API_URL}/{room_data['objectId']}",
-                    headers=HEADERS,
-                    json=updated_data,
-                    timeout=10
-                )
+                updated_data = {**room_data, "players": players}
+                try:
+                    requests.put(
+                        f"{BASE_API_URL}/{room_data['objectId']}",
+                        headers=HEADERS,
+                        json=updated_data,
+                        timeout=10
+                    )
+                except Exception as e:
+                    st.warning(f"Exit sync failed: {str(e)}")
         st.session_state.entered_room = False
         st.session_state.my_role = None
-        st.success("Successfully exited the room")
+        st.success("Exited room")
         st.rerun()
 
-# Enter room button
+# 进入房间按钮
 if not st.session_state.entered_room:
     if st.button("📥 Enter Room", use_container_width=True, type="primary"):
-        room_data = enter_room(room_id)
-        if room_data:
-            st.session_state.entered_room = True
-            st.session_state.object_id = room_data["objectId"]
-            st.session_state.board = room_data["board"]
-            st.session_state.current_player = room_data["current_player"]
-            st.session_state.players = room_data["players"]
-            st.session_state.my_role = room_data["players"][get_device_id()]
-            st.success(f"Successfully entered room! Your role: {st.session_state.my_role}")
-            st.rerun()
-        else:
-            st.error("Room is full (2 players). Please try again later.")
+        with st.spinner(f"Joining room {room_id}..."):
+            room_data = enter_room(room_id)
+            if room_data:
+                st.session_state.entered_room = True
+                st.session_state.object_id = room_data["objectId"]
+                st.session_state.board = room_data.get("board", ["", "", "", "", "", "", "", "", ""])
+                st.session_state.current_player = room_data.get("current_player", "X")
+                st.session_state.players = room_data["players"]
+                st.session_state.my_role = room_data["players"][device_id]
+                st.rerun()
 
-# Display game board if entered
+# 已进入房间：显示棋盘和房间唯一标识
 if st.session_state.entered_room and st.session_state.my_role:
     st.divider()
+    # 显示房间唯一ID（两人需一致才在同一房间）
     st.info(f"""
-    Room {room_id}（{len(st.session_state.players)}/2 players）
-    Your role: {st.session_state.my_role} | Current turn: {st.session_state.current_player}
-    {">>> Waiting for opponent's move..." if st.session_state.my_role != st.session_state.current_player else ">>> Your turn to play!"}
+    Room {room_id} (Unique ID: {st.session_state.object_id[:8]})<br>
+    Players: {len(st.session_state.players)}/2 | Your role: {st.session_state.my_role}<br>
+    Current turn: {st.session_state.current_player}
+    {">>> Waiting for opponent..." if st.session_state.my_role != st.session_state.current_player else ">>> Your turn!"}
     """)
 
+    # 显示房间内所有玩家的设备ID（方便核对）
     st.markdown(f"""
-    <div class="debug-info">
-    Debug: Current players (device IDs): {list(st.session_state.players.keys())}
+    <div class="debug-box">
+    Players in room:<br>
+    {[f"- {k[:8]}...({v})" for k, v in st.session_state.players.items()]}
     </div>
     """, unsafe_allow_html=True)
 
     if st.session_state.game_over:
         if st.session_state.winner == "Draw":
-            st.success("🟰 Game over: It's a draw!")
+            st.success("🟰 Game over: Draw!")
         else:
             st.success(f"🏆 Game over: {st.session_state.winner} wins!")
 
-    # Game board rendering
+    # 棋盘渲染
     st.subheader("Game Board")
     with st.container():
         st.markdown('<div class="board-container">', unsafe_allow_html=True)
@@ -319,9 +384,9 @@ if st.session_state.entered_room and st.session_state.my_role:
                             json=update_data,
                             timeout=10
                         )
-                        st.success("Move successful! Opponent will see it after refresh.")
+                        st.success("Move saved! Opponent can refresh.")
                     except Exception as e:
-                        st.warning(f"Synchronization failed: {str(e)}")
+                        st.warning(f"Sync failed: {str(e)}")
                     st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
@@ -344,14 +409,13 @@ if st.session_state.entered_room and st.session_state.my_role:
                 },
                 timeout=10
             )
-            st.success("Game restarted successfully")
+            st.success("Game restarted")
         except Exception as e:
             st.warning(f"Restart failed: {str(e)}")
         st.rerun()
 
 st.caption("""
-💡 Online Tips:
-1. First player automatically becomes X, second becomes O
-2. If "You have left the room" is shown, check if you were removed by others
-3. Debug info shows device IDs in the room to confirm successful join
+💡 How to confirm same room?
+- Both players must see the SAME "Room unique ID" (e.g., abc123...)
+- If not, click "Force Clean Room" and re-enter
 """)
