@@ -1,110 +1,183 @@
 import streamlit as st
-import leancloud  # 确保已安装：pip install leancloud
+import requests  # 用于调用LeanCloud REST API，无编译依赖
 
-# 1. 初始化LeanCloud（替换成你的App ID和App Key）
-leancloud.init(
-    app_id="hiwS1jgaGdLqJhk2UtEwHGdK-gzGzoHsz",  # 粘贴刚才复制的App ID
-    app_key="bENg8Yr0UlGdt7NJB70i2VOW"  # 粘贴刚才复制的App Key
-)
-# 国内应用需要指定服务器地址（默认是国内地址，可加此行确保正确）
-leancloud.use_region("CN")
+# ---------------------- 1. 核心配置（必须替换为你的LeanCloud信息） ----------------------
+# 替换成你在LeanCloud「应用凭证」中获取的App ID和App Key
+APP_ID = "hiwS1jgaGdLqJhk2UtEwHGdK-gzGzoHsz"
+APP_KEY = "bENg8Yr0UlGdt7NJB70i2VOW"
+# LeanCloud REST API地址（GameState是你创建的数据表名，无需修改）
+BASE_API_URL = "https://api.leancloud.cn/1.1/classes/GameState"
+# LeanCloud API请求头（固定格式，无需修改）
+HEADERS = {
+    "X-LC-Id": APP_ID,
+    "X-LC-Key": APP_KEY,
+    "Content-Type": "application/json"
+}
 
-# 2. 定义数据表（必须和你创建的Class名称一致：GameState）
-GameState = leancloud.Object.extend("GameState")
 
-# 3. 从LeanCloud读取游戏状态（代码不变，直接用）
+# ---------------------- 2. 井字棋胜负判断函数（核心补充） ----------------------
+def check_winner():
+    board = st.session_state.board
+    # 定义胜利组合：3行、3列、2条对角线
+    win_combinations = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8],  # 行
+        [0, 3, 6], [1, 4, 7], [2, 5, 8],  # 列
+        [0, 4, 8], [2, 4, 6]  # 对角线
+    ]
+    # 检查是否有玩家获胜
+    for combo in win_combinations:
+        a, b, c = combo
+        if board[a] == board[b] == board[c] != "":
+            return board[a]  # 返回赢家（X或O）
+    # 检查是否平局（棋盘满且无赢家）
+    if "" not in board:
+        return "平局"
+    # 游戏未结束
+    return None
+
+
+# ---------------------- 3. 从LeanCloud读取游戏状态（双人同步核心） ----------------------
 def load_game_state():
-    query = GameState.query
-    results = query.find()  # 查找表中所有数据
-    if not results:  # 如果表是空的，初始化一个新游戏
-        new_game = GameState()
-        new_game.set("board", [""]*9)  # 空棋盘
-        new_game.set("current_player", "X")  # 玩家X先行
-        new_game.set("game_over", False)
-        new_game.set("winner", None)
-        new_game.save()  # 保存到LeanCloud
+    try:
+        # 发送GET请求获取游戏状态
+        response = requests.get(BASE_API_URL, headers=HEADERS, timeout=10)
+        data = response.json()
+
+        if data.get("results"):  # 表中有数据，读取第一条（单局游戏）
+            game_data = data["results"][0]
+            return {
+                "object_id": game_data["objectId"],  # 数据ID，用于后续更新
+                "board": game_data["board"],
+                "current_player": game_data["current_player"],
+                "game_over": game_data["game_over"],
+                "winner": game_data["winner"]
+            }
+        else:  # 表为空，初始化新游戏并保存到LeanCloud
+            init_game = {
+                "board": [""] * 9,
+                "current_player": "X",
+                "game_over": False,
+                "winner": None
+            }
+            create_response = requests.post(BASE_API_URL, json=init_game, headers=HEADERS, timeout=10)
+            new_game = create_response.json()
+            return {
+                "object_id": new_game["objectId"],
+                "board": [""] * 9,
+                "current_player": "X",
+                "game_over": False,
+                "winner": None
+            }
+    except Exception as e:
+        st.error(f"连接LeanCloud失败：{str(e)}")
+        # 本地降级方案（仅临时使用，双人同步会失效）
         return {
-            "board": [""]*9,
+            "object_id": "local_temp",
+            "board": [""] * 9,
             "current_player": "X",
             "game_over": False,
             "winner": None
         }
-    else:  # 如果表中有数据，读取最新状态
-        game = results[0]
-        return {
-            "board": game.get("board"),
-            "current_player": game.get("current_player"),
-            "game_over": game.get("game_over"),
-            "winner": game.get("winner")
-        }
 
-# 4. 保存游戏状态到LeanCloud（代码不变，直接用）
+
+# ---------------------- 4. 保存游戏状态到LeanCloud ----------------------
 def save_game_state(state):
-    query = GameState.query
-    results = query.find()
-    if results:  # 更新已有数据
-        game = results[0]
-    else:  # 如果没有数据，创建新记录
-        game = GameState()
-    # 更新状态（board、玩家、游戏是否结束等）
-    game.set("board", state["board"])
-    game.set("current_player", state["current_player"])
-    game.set("game_over", state["game_over"])
-    game.set("winner", state["winner"])
-    game.save()  # 保存到LeanCloud
+    try:
+        # 跳过本地临时ID的保存（仅LeanCloud数据需要更新）
+        if state["object_id"] == "local_temp":
+            return
+        # 发送PUT请求更新数据
+        update_url = f"{BASE_API_URL}/{state['object_id']}"
+        update_data = {
+            "board": state["board"],
+            "current_player": state["current_player"],
+            "game_over": state["game_over"],
+            "winner": state["winner"]
+        }
+        requests.put(update_url, json=update_data, headers=HEADERS, timeout=10)
+    except Exception as e:
+        st.warning(f"同步数据到LeanCloud失败：{str(e)}")
 
-# 5. 加载游戏状态（替换原来的本地初始化代码）
-game_state = load_game_state()
-st.session_state.board = game_state["board"]
-st.session_state.current_player = game_state["current_player"]
-st.session_state.game_over = game_state["game_over"]
-st.session_state.winner = game_state["winner"]
 
-# 6. 棋盘布局代码（用之前修改的3x3适配手机的代码，确保按钮点击后保存状态）
-# （这部分代码不变，只需确保按钮点击后调用save_game_state）
+# ---------------------- 5. 初始化游戏状态 ----------------------
+if "object_id" not in st.session_state:
+    game_state = load_game_state()
+    st.session_state.object_id = game_state["object_id"]
+    st.session_state.board = game_state["board"]
+    st.session_state.current_player = game_state["current_player"]
+    st.session_state.game_over = game_state["game_over"]
+    st.session_state.winner = game_state["winner"]
+
+# ---------------------- 6. 页面UI（微信适配的3x3棋盘） ----------------------
+st.title("🎮 双人井字棋（Bradley）")
+
+# 显示当前玩家/胜负结果
+if st.session_state.game_over:
+    if st.session_state.winner == "score draw":
+        st.success("🟰 游戏结束：score draw！")
+    else:
+        st.success(f"🏆 游戏结束：玩家 {st.session_state.winner} WIN！")
+else:
+    st.info(f"当前回合：玩家 {st.session_state.current_player}")
+
+# 3x3棋盘（手机/微信适配）
 st.subheader("游戏棋盘")
 for row in range(3):
-    cols_in_row = st.columns(3)
+    cols_in_row = st.columns(3)  # 每行3列，强制3x3布局
     for col in range(3):
         grid_index = row * 3 + col
         with cols_in_row[col]:
+            # 按钮显示X/O，空位置显示空格（避免按钮太小）
             btn_text = st.session_state.board[grid_index] if st.session_state.board[grid_index] != "" else "　"
+            # 创建按钮（游戏结束/已有棋子时禁用）
             btn_clicked = st.button(
                 btn_text,
                 key=grid_index,
                 disabled=st.session_state.game_over or st.session_state.board[grid_index] != "",
-                use_container_width=True,
+                use_container_width=True,  # 适配手机屏幕宽度
                 type="primary" if st.session_state.board[grid_index] == "X" else "secondary"
             )
+            # 按钮点击逻辑
             if btn_clicked:
+                # 落子
                 st.session_state.board[grid_index] = st.session_state.current_player
-                # 检查胜负（原来的check_winner函数不变）
+                # 判断胜负
                 st.session_state.winner = check_winner()
                 if st.session_state.winner is not None:
                     st.session_state.game_over = True
                 else:
+                    # 切换玩家
                     st.session_state.current_player = "O" if st.session_state.current_player == "X" else "X"
-                # 关键：保存状态到LeanCloud
+                # 同步状态到LeanCloud
                 save_game_state({
+                    "object_id": st.session_state.object_id,
                     "board": st.session_state.board,
                     "current_player": st.session_state.current_player,
                     "game_over": st.session_state.game_over,
                     "winner": st.session_state.winner
                 })
+                # 刷新页面显示最新状态
                 st.rerun()
 
-# 7. 重置游戏按钮（确保重置后同步到LeanCloud）
+
+# 重置游戏按钮
 def reset_game():
-    st.session_state.board = [""]*9
+    # 重置本地状态
+    st.session_state.board = [""] * 9
     st.session_state.current_player = "X"
     st.session_state.game_over = False
     st.session_state.winner = None
     # 同步重置LeanCloud数据
     save_game_state({
-        "board": [""]*9,
+        "object_id": st.session_state.object_id,
+        "board": [""] * 9,
         "current_player": "X",
         "game_over": False,
         "winner": None
     })
 
+
 st.button("🔄 重新开始游戏", on_click=reset_game, use_container_width=True)
+
+# 底部提示
+st.caption("💡 微信打开即可双人同步玩，一人落子后另一人刷新页面可见！")
