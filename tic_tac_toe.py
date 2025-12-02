@@ -3,8 +3,8 @@ import leancloud  # 确保已安装：pip install leancloud
 
 # 1. 初始化LeanCloud（替换成你的App ID和App Key）
 leancloud.init(
-    app_id="你的App ID",  # 粘贴刚才复制的App ID
-    app_key="你的App Key"  # 粘贴刚才复制的App Key
+    app_id="hiwS1jgaGdLqJhk2UtEwHGdK-gzGzoHsz",  # 粘贴刚才复制的App ID
+    app_key="bENg8Yr0UlGdt7NJB70i2VOW"  # 粘贴刚才复制的App Key
 )
 # 国内应用需要指定服务器地址（默认是国内地址，可加此行确保正确）
 leancloud.use_region("CN")
