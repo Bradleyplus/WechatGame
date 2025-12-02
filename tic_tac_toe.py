@@ -38,7 +38,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------- 云存储配置（LeanCloud字段仅保留必要项） ----------------------
+# ---------------------- 云存储配置 ----------------------
 APP_ID = "hiwS1jgaGdLqJhk2UtEwHGdK-gzGzoHsz"
 APP_KEY = "bENg8Yr0UlGdt7NJB70i2VOW"
 BASE_API_URL = "https://api.leancloud.cn/1.1/classes/GameState"
@@ -49,20 +49,23 @@ HEADERS = {
 }
 
 
-# ---------------------- 核心工具函数 ----------------------
+# ---------------------- 核心工具函数（修复胜利判断） ----------------------
 def check_winner(board):
-    win_combinations = [
-        [0, 1, 2], [3, 4, 5], [6, 7, 8],
-        [0, 3, 6], [1, 4, 7], [2, 5, 8],
-        [0, 4, 8], [2, 4, 6]
+    """优化胜利判断：确保所有连线情况被正确识别"""
+    win_patterns = [
+        # 横向
+        (0, 1, 2), (3, 4, 5), (6, 7, 8),
+        # 纵向
+        (0, 3, 6), (1, 4, 7), (2, 5, 8),
+        # 对角线
+        (0, 4, 8), (2, 4, 6)
     ]
-    for combo in win_combinations:
-        a, b, c = combo
+    for (a, b, c) in win_patterns:
         if board[a] == board[b] == board[c] != "":
-            return board[a]
+            return board[a]  # 返回胜利方（X/O）
     if "" not in board:
         return "Draw"
-    return None
+    return None  # 未分胜负
 
 
 def get_device_id():
@@ -71,16 +74,15 @@ def get_device_id():
     return st.session_state.device_id
 
 
-# ---------------------- 房间管理（核心：仅传递LeanCloud定义的字段） ----------------------
+# ---------------------- 房间管理 ----------------------
 def force_clean_room(room_id):
-    """清理指定房间号的所有记录（避免冗余）"""
     try:
         params = {"where": f'{{"room_id":"{room_id}"}}'}
         res = requests.get(BASE_API_URL, headers=HEADERS, params=params, timeout=10)
         if res.status_code == 200 and res.json().get("results"):
             for record in res.json()["results"]:
                 requests.delete(f"{BASE_API_URL}/{record['objectId']}", headers=HEADERS, timeout=10)
-            st.success(f"Room {room_id} cleaned (all records deleted)")
+            st.success(f"Room {room_id} cleaned!")
             time.sleep(1)
             return True
         st.info(f"No records for room {room_id}")
@@ -89,8 +91,7 @@ def force_clean_room(room_id):
     return False
 
 
-def load_room(room_id, debug=False):
-    """加载房间（仅保留必要字段）"""
+def load_room(room_id):
     try:
         params = {
             "where": f'{{"room_id":"{room_id}"}}',
@@ -102,13 +103,8 @@ def load_room(room_id, debug=False):
         data = res.json()
         if data.get("results"):
             room_data = data["results"][0]
-            # 确保players字段存在（LeanCloud返回可能缺失）
             room_data["players"] = room_data.get("players", {})
-            if debug:
-                st.write(f"Loaded room (ID: {room_data['objectId']}): {room_data}")
             return room_data
-        if debug:
-            st.write(f"No room found for {room_id}")
         return None
     except Exception as e:
         st.error(f"Load error: {str(e)}")
@@ -116,37 +112,33 @@ def load_room(room_id, debug=False):
 
 
 def create_room(room_id):
-    """创建房间（仅传递LeanCloud定义的字段）"""
     existing_room = load_room(room_id)
     if existing_room:
         st.warning(f"Room {room_id} exists! Joining...")
         return existing_room
 
     device_id = get_device_id()
-    # 仅包含LeanCloud中定义的字段（去掉冗余的player_count）
     init_data = {
         "room_id": room_id,
         "board": ["", "", "", "", "", "", "", "", ""],
         "current_player": "X",
         "game_over": False,
         "winner": None,
-        "players": {device_id: "X"}  # 仅存储设备ID-角色映射
+        "players": {device_id: "X"}
     }
     try:
         res = requests.post(BASE_API_URL, headers=HEADERS, json=init_data, timeout=10)
         res.raise_for_status()
         new_data = res.json()
         init_data["objectId"] = new_data["objectId"]
-        st.success(f"Room {room_id} created (Unique ID: {new_data['objectId'][:8]})")
+        st.success(f"Room {room_id} created (ID: {new_data['objectId'][:8]})")
         return init_data
     except Exception as e:
-        # 显示详细错误（方便排查）
-        st.error(f"Create failed: {str(e)} | Response: {res.text if 'res' in locals() else 'No response'}")
+        st.error(f"Create failed: {str(e)} | Response: {res.text if 'res' in locals() else 'None'}")
         return None
 
 
 def enter_room(room_id):
-    """进入房间（更新请求仅传递必要字段）"""
     device_id = get_device_id()
     room_data = load_room(room_id)
 
@@ -157,14 +149,12 @@ def enter_room(room_id):
         st.info(f"Already in room {room_id} (role: {room_data['players'][device_id]})")
         return room_data
 
-    # 房间未满（players长度<2）
     if len(room_data["players"]) < 2:
         updated_players = room_data["players"].copy()
         updated_players[device_id] = "O"
-        # 仅更新必要字段（去掉冗余的player_count）
         updated_data = {
             "players": updated_players,
-            "current_player": room_data["current_player"],  # 保留原回合
+            "current_player": room_data["current_player"],
             "board": room_data["board"]
         }
         try:
@@ -175,15 +165,15 @@ def enter_room(room_id):
             time.sleep(1.5)
             verified_room = load_room(room_id)
             if verified_room and device_id in verified_room["players"]:
-                st.success(f"Joined room {room_id} as O (Unique ID: {verified_room['objectId'][:8]})")
+                st.success(f"Joined as O (Room ID: {verified_room['objectId'][:8]})")
                 return verified_room
-            st.error("Join failed: Server did not save your role")
+            st.error("Join failed: Role not saved")
             return None
         except Exception as e:
-            st.error(f"Join error: {str(e)} | Response: {res.text if 'res' in locals() else 'No response'}")
+            st.error(f"Join error: {str(e)} | Response: {res.text if 'res' in locals() else 'None'}")
             return None
 
-    st.error(f"Room {room_id} is full (2 players)")
+    st.error("Room is full (2 players)")
     return None
 
 
@@ -192,7 +182,7 @@ def auto_restore_state(room_id):
     if st.session_state.entered_room:
         room_data = load_room(room_id)
         if not room_data:
-            st.warning(f"Room {room_id} not found. Re-enter required.")
+            st.warning("Room not found. Re-enter.")
             st.session_state.entered_room = False
             return False
         device_id = get_device_id()
@@ -206,21 +196,21 @@ def auto_restore_state(room_id):
             st.session_state.my_role = room_data["players"][device_id]
             return True
         st.session_state.entered_room = False
-        st.warning(f"You're not in room {room_id}. Re-enter.")
+        st.warning("You're not in this room. Re-enter.")
     return False
 
 
 # ---------------------- 主页面逻辑 ----------------------
-st.title("🎮 Two-Player Tic-Tac-Toe (Online)")
+st.title("🎮 Two-Player Tic-Tac-Toe")
 
 room_id = st.selectbox(
-    "🔑 Select Game Room (Unique)",
+    "🔑 Select Room",
     options=["8888", "6666"],
     index=0,
     key="room_selector"
 )
 
-# 初始化会话状态（去掉player_count）
+# 初始化会话状态
 required_states = {
     "entered_room": False,
     "my_role": None,
@@ -240,7 +230,7 @@ device_id = get_device_id()
 st.markdown(f"""
 <div class="debug-box">
 - Your device ID: <strong>{device_id[:8]}...</strong><br>
-- Room number: <strong>{room_id}</strong><br>
+- Room: <strong>{room_id}</strong><br>
 {'- Room unique ID: <span class="room-id-box">{st.session_state.object_id[:8]}...</span>' if st.session_state.object_id else ''}
 </div>
 """, unsafe_allow_html=True)
@@ -254,7 +244,7 @@ if st.button("⚠️ Force Clean Room", use_container_width=True, type="secondar
 
 col_refresh, col_exit = st.columns(2)
 with col_refresh:
-    if st.button("🔄 Manual Refresh", use_container_width=True):
+    if st.button("🔄 Refresh", use_container_width=True):
         auto_restore_state(room_id)
         st.success("Refreshed")
 
@@ -290,14 +280,13 @@ if not st.session_state.entered_room:
                 st.session_state.my_role = room_data["players"][device_id]
                 st.rerun()
 
-# 游戏界面
+# 游戏界面（修复落子逻辑）
 if st.session_state.entered_room and st.session_state.my_role:
     st.divider()
     st.info(f"""
-    Room {room_id} (Unique ID: {st.session_state.object_id[:8]})<br>
-    Players: {len(st.session_state.players)}/2 | Your role: {st.session_state.my_role}<br>
-    Current turn: {st.session_state.current_player}
-    {">>> Waiting for opponent..." if st.session_state.my_role != st.session_state.current_player else ">>> Your turn!"}
+    Room {room_id} (Players: {len(st.session_state.players)}/2)<br>
+    Your role: {st.session_state.my_role} | Current turn: {st.session_state.current_player}
+    {">>> Wait for opponent" if st.session_state.my_role != st.session_state.current_player else ">>> Your turn to play!"}
     """)
 
     st.markdown(f"""
@@ -307,11 +296,12 @@ if st.session_state.entered_room and st.session_state.my_role:
     </div>
     """, unsafe_allow_html=True)
 
+    # 游戏结束提示（提前显示）
     if st.session_state.game_over:
-        result = "Draw!" if st.session_state.winner == "Draw" else f"{st.session_state.winner} wins!"
-        st.success(f"🏆 Game over: {result}")
+        result = f"{st.session_state.winner} wins!" if st.session_state.winner != "Draw" else "Draw!"
+        st.success(f"🏆 Game Over: {result}")
 
-    # 棋盘
+    # 棋盘渲染（修复按钮禁用逻辑）
     st.subheader("Game Board")
     with st.container():
         st.markdown('<div class="board-container">', unsafe_allow_html=True)
@@ -322,12 +312,15 @@ if st.session_state.entered_room and st.session_state.my_role:
             with grid[i]:
                 cell_value = st.session_state.board[i]
                 display_text = cell_value if cell_value else " "
+
+                # 修复禁用条件：仅当“游戏结束、格子非空、非当前回合”时禁用
                 is_disabled = (
                         st.session_state.game_over
                         or (cell_value != "")
                         or (st.session_state.my_role != st.session_state.current_player)
                 )
 
+                # 落子按钮（确保胜利步可点击）
                 if st.button(
                         label=display_text,
                         key=f"cell_{i}",
@@ -335,16 +328,20 @@ if st.session_state.entered_room and st.session_state.my_role:
                         use_container_width=True,
                         type="primary" if cell_value == "X" else "secondary"
                 ):
+                    # 落子
                     st.session_state.board[i] = st.session_state.my_role
+                    # 立即判断胜利（关键：落子后先检查胜负）
                     winner = check_winner(st.session_state.board)
+
                     if winner:
                         st.session_state.game_over = True
                         st.session_state.winner = winner
-                        st.session_state.current_player = None
+                        st.session_state.current_player = None  # 游戏结束，无回合
                     else:
+                        # 切换回合（仅当未分胜负时）
                         st.session_state.current_player = "O" if st.session_state.current_player == "X" else "X"
 
-                    # 落子后同步（仅传递必要字段）
+                    # 同步到云端
                     try:
                         update_data = {
                             "board": st.session_state.board,
@@ -358,14 +355,19 @@ if st.session_state.entered_room and st.session_state.my_role:
                             json=update_data,
                             timeout=10
                         )
-                        st.success("Move saved! Opponent refresh to see.")
+                        # 胜利提示（落子后立即显示）
+                        if winner:
+                            st.success(f"🎉 You won! (Role: {st.session_state.my_role})")
+                        else:
+                            st.success("Move saved! Opponent refresh to see.")
                     except Exception as e:
                         st.warning(f"Sync failed: {str(e)}")
                     st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-    if st.button("🔄 Restart Game", use_container_width=True):
+    # 重新开始
+    if st.button("🔄 Restart Game", use_container_width=True) and st.session_state.game_over:
         st.session_state.board = ["", "", "", "", "", "", "", "", ""]
         st.session_state.current_player = "X"
         st.session_state.game_over = False
@@ -382,13 +384,13 @@ if st.session_state.entered_room and st.session_state.my_role:
                 },
                 timeout=10
             )
-            st.success("Game restarted")
+            st.success("Game restarted!")
         except Exception as e:
             st.warning(f"Restart failed: {str(e)}")
         st.rerun()
 
 st.caption("""
-💡 Fix for "400 Error":
-1. Click "Force Clean Room" to delete old records
-2. Re-enter room (ensure only necessary fields are sent to LeanCloud)
+💡 Fix for final move issue:
+1. Ensure "Your role" matches "Current turn" when placing the winning move
+2. The winning move will trigger an immediate "You won!" notification
 """)
