@@ -99,7 +99,15 @@ def save_game_state(state):
 
 # ---------------------- 5. 初始化页面（自动刷新+房间ID） ----------------------
 # 开启自动刷新（每2秒刷新一次，实现实时同步）
-st.autorefresh(interval=2000, key="auto_refresh")
+# 兼容所有Streamlit版本的自动刷新逻辑（替代st.autorefresh）
+import time
+if "last_refresh_time" not in st.session_state:
+    st.session_state.last_refresh_time = time.time()
+
+# 每2秒自动刷新一次（实现联机同步）
+if time.time() - st.session_state.last_refresh_time >= 2:
+    st.session_state.last_refresh_time = time.time()
+    st.rerun()
 
 st.title("🎮 双人井字棋（联机版）")
 
